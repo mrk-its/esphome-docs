@@ -1,0 +1,239 @@
+---
+description: "Instructions for setting up a CANopen node in ESPHome"
+title: "CANopen"
+---
+import APIRef from '@components/APIRef.astro';
+
+The `canopen` component turns an ESPHome device into a [CANopen](https://www.can-cia.org/can-knowledge/canopen/) node
+(CiA 301) on a [CAN bus](/components/canbus/), using the [CANopenNode](https://github.com/CANopenNode/CANopenNode)
+stack. The node:
+
+- runs the NMT state machine (it reacts to NMT commands from a master) and sends a heartbeat;
+- monitors the heartbeats of other nodes and reports when they go online, offline, change their NMT state or restart;
+- reports every heartbeat and emergency (EMCY) frame on the bus;
+- reads and writes objects of other nodes over SDO, and sends NMT commands to them.
+
+This component requires a [CAN bus](/components/canbus/) platform, for example
+[ESP32 CAN](/components/canbus/esp32_can/) or [MCP2515](/components/canbus/mcp2515/).
+
+```yaml
+# Example configuration entry
+canopen:
+  node_id: 0x10
+```
+
+## Configuration Variables
+
+- **node_id** (**Required**, int): The node id of this node, from `1` to `127`. It must be unique on the bus.
+- **canbus_id** (*Optional*, [ID](/guides/configuration-types/#id)): The [CAN bus](/components/canbus/) to use. Required
+  if there is more than one bus.
+- **heartbeat_interval** (*Optional*, [Time](/guides/configuration-types/#time)): How often this node sends its
+  heartbeat. Up to `65535ms`. Defaults to `5s`.
+- **heartbeat_clients** (*Optional*, list): Other nodes whose heartbeats are monitored, see
+  [Heartbeat Monitoring](#heartbeat-monitoring).
+  - **node_id** (**Required**, int): The node id, from `1` to `127`. It can't be this node's own id.
+  - **timeout** (**Required**, [Time](/guides/configuration-types/#time)): The node is reported offline when no
+    heartbeat arrives within this time. Up to `65535ms`. Choose it longer than the node's heartbeat interval.
+- **response_timeout** (*Optional*, [Time](/guides/configuration-types/#time)): How long an SDO request waits for an
+  answer. Up to `65535ms`. Defaults to `500ms`.
+- **on_node_event** (*Optional*, [Automation](/automations/)): See [`on_node_event` Trigger](#on_node_event-trigger).
+- **on_heartbeat** (*Optional*, [Automation](/automations/)): See [`on_heartbeat` Trigger](#on_heartbeat-trigger).
+- **on_emcy** (*Optional*, [Automation](/automations/)): See [`on_emcy` Trigger](#on_emcy-trigger).
+- **id** (*Optional*, [ID](/guides/configuration-types/#id)): Manually specify the ID used for code generation and
+  in lambdas.
+
+More than one `canopen` node can be configured, for example on different buses.
+
+## Heartbeat Monitoring
+
+Nodes listed in `heartbeat_clients` are monitored. Each monitored node reports these events:
+
+- `ONLINE`: the first heartbeat, or the first one after a timeout.
+- `OFFLINE`: no heartbeat within `timeout`.
+- `NMT_CHANGED`: the NMT state in the heartbeat changed. It also follows `ONLINE` (unknown → state) and `OFFLINE`
+  (state → unknown).
+- `RESET`: the node sent a boot-up message, so it restarted and lost any configuration it got at runtime.
+
+The NMT state is one of `BOOTUP`, `STOPPED`, `OPERATIONAL`, `PRE_OPERATIONAL` or `UNKNOWN`.
+
+```yaml
+canopen:
+  node_id: 0x10
+  heartbeat_clients:
+    - node_id: 0x01
+      timeout: 7s
+  on_node_event:
+    - if:
+        condition:
+          lambda: "return node_id == 0x01 && event == canopen::NodeEvent::OFFLINE;"
+        then:
+          - logger.log: "Node 0x01 is offline"
+```
+
+The state of a monitored node is also available in lambdas:
+
+```cpp
+// true while heartbeats arrive in time
+id(my_canopen).is_node_online(0x01);
+// NMT state from the last heartbeat (UNKNOWN if the node isn't monitored)
+id(my_canopen).get_node_state(0x01) == canopen::NMTState::OPERATIONAL;
+```
+
+## Automations
+
+### `on_node_event` Trigger
+
+Called for every event of a node in `heartbeat_clients`, see [Heartbeat Monitoring](#heartbeat-monitoring). Variables:
+
+- `node_id` (`uint8_t`): the node.
+- `event` (`canopen::NodeEvent`): `ONLINE`, `OFFLINE`, `NMT_CHANGED` or `RESET`.
+- `state` (`canopen::NMTState`): the node's NMT state.
+
+```yaml
+canopen:
+  # ...
+  on_node_event:
+    - logger.log:
+        format: "node 0x%02x: %s, %s"
+        args:
+          - node_id
+          - canopen::node_event_to_string(event)
+          - canopen::nmt_state_to_string(state)
+```
+
+### `on_heartbeat` Trigger
+
+Called for every heartbeat frame on the bus, from any node (monitored or not). Variables: `node_id` (`uint8_t`) and
+`state` (`canopen::NMTState`). A node's heartbeats are not received by the node itself.
+
+### `on_emcy` Trigger
+
+Called for every emergency (EMCY) frame on the bus, from any node. Variables:
+
+- `node_id` (`uint8_t`): the node that sent it.
+- `emergency` (`const canopen::Emergency &`): `error_code` (`uint16_t`), `error_register` (`uint8_t`) and
+  `manufacturer_data` (5 bytes).
+
+```yaml
+canopen:
+  # ...
+  on_emcy:
+    - logger.log:
+        format: "EMCY from node 0x%02x: 0x%04x"
+        args: [node_id, emergency.error_code]
+```
+
+### `canopen.sdo_write` Action
+
+Writes a value of 1, 2 or 4 bytes to an object of another node (or of this node) over SDO. The action starts the
+transfer and continues; `on_success` or `on_error` runs when it ends. Requests are queued and sent one after another.
+
+```yaml
+on_...:
+  - canopen.sdo_write:
+      node_id: 0x01
+      index: 0x1017
+      value: 2000
+      size: 2
+      on_error:
+        - logger.log:
+            format: "write failed: %s, abort code 0x%08x"
+            args: ["canopen::sdo_result_to_string(result)", "(unsigned) abort_code"]
+```
+
+Configuration variables:
+
+- **node_id** (**Required**, int, [templatable](/automations/templates/)): The node, from `1` to `127`.
+- **index** (**Required**, int, [templatable](/automations/templates/)): The object index.
+- **subindex** (*Optional*, int, [templatable](/automations/templates/)): The subindex. Defaults to `0`.
+- **value** (**Required**, int, [templatable](/automations/templates/)): The value. Negative values are written as
+  two's complement. A constant must fit in `size` bytes.
+- **size** (*Optional*, int): The size of the object in bytes: `1`, `2` or `4`. Defaults to `4`.
+- **on_success** (*Optional*, [Automation](/automations/)): Runs when the node confirmed the write.
+- **on_error** (*Optional*, [Automation](/automations/)): Runs when the write failed. Variables: `result`
+  (`canopen::SDOResult`: `ABORT`, `TIMEOUT`, `TRANSPORT_ERROR` or `REJECTED`) and `abort_code` (`uint32_t`, the SDO
+  abort code for `ABORT` and `TIMEOUT`).
+- **id** (*Optional*, [ID](/guides/configuration-types/#id)): The `canopen` node to use. Required if there is more
+  than one.
+
+### `canopen.nmt` Action
+
+Sends an NMT command to another node.
+
+```yaml
+on_...:
+  - canopen.nmt:
+      node_id: 0x01
+      command: start
+```
+
+Configuration variables:
+
+- **node_id** (**Required**, int, [templatable](/automations/templates/)): The node, from `1` to `127`, or `0` for all
+  nodes (including this one).
+- **command** (**Required**, enum): One of `start`, `stop`, `pre_operational`, `reset_node` or `reset_communication`.
+- **id** (*Optional*, [ID](/guides/configuration-types/#id)): The `canopen` node to use. Required if there is more
+  than one.
+
+## Lambdas
+
+### SDO Client
+
+The SDO client is compiled in when the configuration uses a `canopen.sdo_write` action. It has one channel; requests
+are queued (up to 16) and sent one after another. Every request ends in exactly one callback, with a
+`canopen::SDOReply`: `result` (`SUCCESS`, `ABORT`, `TIMEOUT`, `SIZE_MISMATCH`, `TRANSPORT_ERROR` or `REJECTED`),
+`abort_code`, `value` / `size` for values and `data` / `len` for buffers (valid only during the callback). A rejected
+request (queue full, invalid arguments) calls back before the call returns `false`. Requests to this node's own id are
+served from its own object dictionary, without CAN frames.
+
+```cpp
+// value read with a width check: a different width gives SIZE_MISMATCH
+id(my_canopen).read_sdo<uint32_t>(0x01, 0x1018, 1, [](void *context, const canopen::SDOReply &reply) {
+  if (reply.ok())
+    ESP_LOGI("main", "vendor id 0x%08x", reply.as<uint32_t>());
+}, nullptr);
+
+// value write
+id(my_canopen).write_sdo<uint16_t>(0x01, 0x1017, 0, 2000);
+
+// buffer read (strings, domains; up to 1024 bytes)
+id(my_canopen).read_sdo_data(0x01, 0x1008, 0, [](void *context, const canopen::SDOReply &reply) {
+  if (reply.ok())
+    ESP_LOGI("main", "name: %.*s", (int) reply.len, (const char *) reply.data);
+}, nullptr);
+```
+
+- `read_sdo<T>(node_id, index, subindex, callback, context)` and `write_sdo<T>(node_id, index, subindex, value,
+  callback, context)` for values of 1, 2 or 4 bytes. `SDOReply::as<T>()` sign-extends for signed types.
+- `read_sdo_data()` and `write_sdo_data(node_id, index, subindex, data, len, callback, context)` for buffers.
+- `cancel_sdo(context)` drops all queued requests with that `context` and aborts its transfer in flight, without
+  callbacks.
+
+### NMT Master
+
+The NMT master is compiled in when the configuration uses a `canopen.nmt` action:
+`id(my_canopen).send_nmt(0x01, canopen::NMTCommand::PRE_OPERATIONAL);`
+
+### Raw Frames
+
+Frames the object dictionary doesn't describe, for example the PDOs of other devices, can be received and sent
+directly:
+
+```cpp
+// every TPDO1 frame (COB-IDs 0x181..0x1FF)
+id(my_canopen).add_frame_listener(0x180, 0x780, [](void *context, uint32_t can_id, const uint8_t *data, uint8_t len) {
+  ESP_LOGD("main", "TPDO1 from node 0x%02x", (unsigned) (can_id & 0x7F));
+}, nullptr);
+
+// returns false if the CAN controller can't take the frame now (it isn't queued)
+const uint8_t data[2] = {0x0F, 0x00};
+id(my_canopen).send_frame(0x201, data, sizeof(data));
+```
+
+A listener on a CAN ID that the node receives itself (for example a monitored node's heartbeat) logs a warning.
+
+## See Also
+
+- [CAN Bus](/components/canbus/)
+- [CANopenNode](https://github.com/CANopenNode/CANopenNode)
+- <APIRef text="canopen.h" path="canopen/canopen.h" />

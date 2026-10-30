@@ -48,13 +48,14 @@ More than one `canopen` node can be configured, for example on different buses.
 
 Nodes listed in `heartbeat_clients` are monitored. Each monitored node reports these events:
 
-- `ONLINE`: the first heartbeat, or the first one after a timeout.
-- `OFFLINE`: no heartbeat within `timeout`.
-- `NMT_CHANGED`: the NMT state in the heartbeat changed. It also follows `ONLINE` (unknown → state) and `OFFLINE`
-  (state → unknown).
-- `RESET`: the node sent a boot-up message, so it restarted and lost any configuration it got at runtime.
+- `NODE_EVENT_ONLINE`: the first heartbeat, or the first one after a timeout.
+- `NODE_EVENT_OFFLINE`: no heartbeat within `timeout`.
+- `NODE_EVENT_NMT_CHANGED`: the NMT state in the heartbeat changed. It also follows `NODE_EVENT_ONLINE` (unknown →
+  state) and `NODE_EVENT_OFFLINE` (state → unknown).
+- `NODE_EVENT_RESET`: the node sent a boot-up message, so it restarted and lost any configuration it got at runtime.
 
-The NMT state is one of `BOOTUP`, `STOPPED`, `OPERATIONAL`, `PRE_OPERATIONAL` or `UNKNOWN`.
+The NMT state is one of `NMT_STATE_BOOTUP`, `NMT_STATE_STOPPED`, `NMT_STATE_OPERATIONAL`, `NMT_STATE_PRE_OPERATIONAL` or
+`NMT_STATE_UNKNOWN`.
 
 ```yaml
 canopen:
@@ -65,7 +66,7 @@ canopen:
   on_node_event:
     - if:
         condition:
-          lambda: "return node_id == 0x01 && event == canopen::NodeEvent::OFFLINE;"
+          lambda: "return node_id == 0x01 && event == canopen::NodeEvent::NODE_EVENT_OFFLINE;"
         then:
           - logger.log: "Node 0x01 is offline"
 ```
@@ -76,7 +77,7 @@ The state of a monitored node is also available in lambdas:
 // true while heartbeats arrive in time
 id(my_canopen).is_node_online(0x01);
 // NMT state from the last heartbeat (UNKNOWN if the node isn't monitored)
-id(my_canopen).get_node_state(0x01) == canopen::NMTState::OPERATIONAL;
+id(my_canopen).get_node_state(0x01) == canopen::NMTState::NMT_STATE_OPERATIONAL;
 ```
 
 ## Automations
@@ -86,7 +87,8 @@ id(my_canopen).get_node_state(0x01) == canopen::NMTState::OPERATIONAL;
 Called for every event of a node in `heartbeat_clients`, see [Heartbeat Monitoring](#heartbeat-monitoring). Variables:
 
 - `node_id` (`uint8_t`): the node.
-- `event` (`canopen::NodeEvent`): `ONLINE`, `OFFLINE`, `NMT_CHANGED` or `RESET`.
+- `event` (`canopen::NodeEvent`): `NODE_EVENT_ONLINE`, `NODE_EVENT_OFFLINE`, `NODE_EVENT_NMT_CHANGED` or
+  `NODE_EVENT_RESET`.
 - `state` (`canopen::NMTState`): the node's NMT state.
 
 ```yaml
@@ -151,8 +153,9 @@ Configuration variables:
 - **size** (*Optional*, int): The size of the object in bytes: `1`, `2` or `4`. Defaults to `4`.
 - **on_success** (*Optional*, [Automation](/automations/)): Runs when the node confirmed the write.
 - **on_error** (*Optional*, [Automation](/automations/)): Runs when the write failed. Variables: `result`
-  (`canopen::SDOResult`: `ABORT`, `TIMEOUT`, `TRANSPORT_ERROR` or `REJECTED`) and `abort_code` (`uint32_t`, the SDO
-  abort code for `ABORT` and `TIMEOUT`).
+  (`canopen::SDOResult`: `SDO_RESULT_ABORT`, `SDO_RESULT_TIMEOUT`, `SDO_RESULT_TRANSPORT_ERROR` or
+  `SDO_RESULT_REJECTED`) and `abort_code` (`uint32_t`, the SDO abort code for `SDO_RESULT_ABORT` and
+  `SDO_RESULT_TIMEOUT`).
 - **id** (*Optional*, [ID](/guides/configuration-types/#id)): The `canopen` node to use. Required if there is more
   than one.
 
@@ -181,10 +184,11 @@ Configuration variables:
 
 The SDO client is compiled in when the configuration uses a `canopen.sdo_write` action. It has one channel; requests
 are queued (up to 16) and sent one after another. Every request ends in exactly one callback, with a
-`canopen::SDOReply`: `result` (`SUCCESS`, `ABORT`, `TIMEOUT`, `SIZE_MISMATCH`, `TRANSPORT_ERROR` or `REJECTED`),
-`abort_code`, `value` / `size` for values and `data` / `len` for buffers (valid only during the callback). A rejected
-request (queue full, invalid arguments) calls back before the call returns `false`. Requests to this node's own id are
-served from its own object dictionary, without CAN frames.
+`canopen::SDOReply`: `result` (`SDO_RESULT_SUCCESS`, `SDO_RESULT_ABORT`, `SDO_RESULT_TIMEOUT`,
+`SDO_RESULT_SIZE_MISMATCH`, `SDO_RESULT_TRANSPORT_ERROR` or `SDO_RESULT_REJECTED`), `abort_code`, `value` / `size` for
+values and `data` / `len` for buffers (valid only during the callback). A rejected request (queue full, invalid
+arguments) calls back before the call returns `false`. Requests to this node's own id are served from its own object
+dictionary, without CAN frames.
 
 ```cpp
 // value read with a width check: a different width gives SIZE_MISMATCH
@@ -212,7 +216,7 @@ id(my_canopen).read_sdo_data(0x01, 0x1008, 0, [](void *context, const canopen::S
 ### NMT Master
 
 The NMT master is compiled in when the configuration uses a `canopen.nmt` action:
-`id(my_canopen).send_nmt(0x01, canopen::NMTCommand::PRE_OPERATIONAL);`
+`id(my_canopen).send_nmt(0x01, canopen::NMTCommand::NMT_COMMAND_PRE_OPERATIONAL);`
 
 ### Raw Frames
 

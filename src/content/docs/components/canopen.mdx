@@ -38,6 +38,10 @@ canopen:
     heartbeat arrives within this time. Up to `65535ms`. Choose it longer than the node's heartbeat interval.
 - **response_timeout** (*Optional*, [Time](/guides/configuration-types/#time)): How long an SDO request waits for an
   answer. Up to `65535ms`. Defaults to `500ms`.
+- **sdo_block_size** (*Optional*, int): Enables SDO block transfer in the SDO server (large uploads and downloads,
+  e.g. firmware), from `1` to `127`: the number of frames per block the node accepts in a block download. The client
+  sends a whole block back to back, so it must fit the CAN receive queue of the node. Block transfer uses about 900
+  bytes more RAM. Not set by default: expedited and segmented transfers only.
 - **nmt_startup** (*Optional*, enum): The NMT state after boot. One of `operational` or `pre_operational`. Defaults to
   `operational`. A node that starts `pre_operational` sends no PDOs until an NMT master starts it, or until it starts
   itself (see [NMT State of This Node](#nmt-state-of-this-node)).
@@ -99,7 +103,8 @@ id(my_canopen).get_node_state(0x01) == canopen::NMTState::NMT_STATE_OPERATIONAL;
 ## Object Dictionary
 
 Other nodes and tools read and write the node's objects with SDO. The node has one SDO server, on the default
-COB-IDs `0x600` + node id (requests) and `0x580` + node id (responses). It supports expedited and segmented transfers.
+COB-IDs `0x600` + node id (requests) and `0x580` + node id (responses). It supports expedited and segmented transfers,
+and block transfers with `sdo_block_size`.
 
 | Index | Object | Access | Notes |
 |---|---|---|---|

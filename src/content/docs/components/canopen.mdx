@@ -1,0 +1,104 @@
+---
+description: "Instructions for setting up a CANopen node in ESPHome"
+title: "CANopen"
+---
+import APIRef from '@components/APIRef.astro';
+
+The `canopen` component turns an ESPHome device into a [CANopen](https://www.can-cia.org/can-knowledge/canopen/) node
+(CiA 301) on a [CAN bus](/components/canbus/), using the [CANopenNode](https://github.com/CANopenNode/CANopenNode)
+stack. The node:
+
+- runs the NMT state machine (it reacts to NMT commands from a master) and sends a heartbeat;
+- answers SDO requests from other nodes and tools, with its identity, device name and versions, see
+  [Object Dictionary](#object-dictionary).
+
+The node doesn't send emergency (EMCY) frames, and doesn't support SYNC, LSS or EDS files.
+
+This component requires a [CAN bus](/components/canbus/) platform, for example
+[ESP32 CAN](/components/canbus/esp32_can/) or [MCP2515](/components/canbus/mcp2515/).
+
+```yaml
+# Example configuration entry
+canopen:
+  node_id: 0x10
+```
+
+## Configuration Variables
+
+- **node_id** (**Required**, int): The node id of this node, from `1` to `127`. It must be unique on the bus.
+- **canbus_id** (*Optional*, [ID](/guides/configuration-types/#id)): The [CAN bus](/components/canbus/) to use. Required
+  if there is more than one bus.
+- **heartbeat_interval** (*Optional*, [Time](/guides/configuration-types/#time)): How often this node sends its
+  heartbeat. Up to `65535ms`. Defaults to `5s`.
+- **nmt_startup** (*Optional*, enum): The NMT state after boot. One of `operational` or `pre_operational`. Defaults to
+  `operational`. A node that starts `pre_operational` stays there until an NMT master starts it, or until it starts
+  itself (see [NMT State of This Node](#nmt-state-of-this-node)).
+- **identity** (*Optional*): The identity object (`0x1018`). Vendor IDs are assigned by
+  [CiA](https://www.can-cia.org/).
+  - **vendor_id** (*Optional*, int): Defaults to `0`.
+  - **product_code** (*Optional*, int): Defaults to `0`.
+  - **revision_number** (*Optional*, int): Defaults to `0`.
+  - **serial_number** (*Optional*, int): Defaults to `0`.
+- **device_name** (*Optional*, string): The device name (`0x1008`). Defaults to the node's name.
+- **hardware_version** (*Optional*, string): The hardware version (`0x1009`). Not present if not set.
+- **software_version** (*Optional*, string): The software version (`0x100A`). Defaults to the ESPHome version.
+- **on_nmt_state_change** (*Optional*, [Automation](/automations/)): See
+  [`on_nmt_state_change` Trigger](#on_nmt_state_change-trigger).
+- **id** (*Optional*, [ID](/guides/configuration-types/#id)): Manually specify the ID used for code generation and
+  in lambdas.
+
+## Object Dictionary
+
+Other nodes and tools read and write the node's objects with SDO. The node has one SDO server, on the default
+COB-IDs `0x600` + node id (requests) and `0x580` + node id (responses). It supports expedited and segmented transfers.
+
+| Index | Object | Access | Notes |
+|---|---|---|---|
+| `0x1000` | Device type | read | `0` |
+| `0x1001` | Error register | read | |
+| `0x1008` | Device name | read | `device_name` |
+| `0x1009` | Hardware version | read | `hardware_version`, only if set |
+| `0x100A` | Software version | read | `software_version` |
+| `0x1014` | EMCY COB-ID | read/write | `0x80` + node id |
+| `0x1017` | Producer heartbeat time | read/write | `heartbeat_interval`; a write takes effect at once |
+| `0x1018` | Identity | read | `identity` |
+| `0x1200` | SDO server parameter | read | |
+
+## Automations
+
+### `on_nmt_state_change` Trigger
+
+Called when this node's own NMT state changes: after boot, on an NMT command from a master, or after
+`set_nmt_state()`. Variable: `state` (`canopen::NMTState`: `NMT_STATE_BOOTUP`, `NMT_STATE_STOPPED`,
+`NMT_STATE_OPERATIONAL`, `NMT_STATE_PRE_OPERATIONAL` or `NMT_STATE_UNKNOWN`).
+
+```yaml
+canopen:
+  # ...
+  nmt_startup: pre_operational
+  on_nmt_state_change:
+    - if:
+        condition:
+          lambda: "return state == canopen::NMTState::NMT_STATE_PRE_OPERATIONAL;"
+        then:
+          # start ourselves after 2 seconds
+          - delay: 2s
+          - lambda: "id(my_canopen).set_nmt_state(canopen::NMTState::NMT_STATE_OPERATIONAL);"
+```
+
+## Lambdas
+
+### NMT State of This Node
+
+```cpp
+// the node's own NMT state (UNKNOWN before setup)
+id(my_canopen).get_nmt_state() == canopen::NMTState::NMT_STATE_OPERATIONAL;
+// OPERATIONAL, PRE_OPERATIONAL or STOPPED; no NMT master needed
+id(my_canopen).set_nmt_state(canopen::NMTState::NMT_STATE_OPERATIONAL);
+```
+
+## See Also
+
+- [CAN Bus](/components/canbus/)
+- [CANopenNode](https://github.com/CANopenNode/CANopenNode)
+- <APIRef text="canopen.h" path="canopen/canopen.h" />

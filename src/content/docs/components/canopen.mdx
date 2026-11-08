@@ -43,9 +43,6 @@ canopen:
     heartbeat arrives within this time. Up to `65535ms`. Choose it longer than the node's heartbeat interval.
 - **response_timeout** (*Optional*, [Time](/guides/configuration-types/#time)): How long an SDO request waits for an
   answer. Up to `65535ms`. Defaults to `500ms`.
-- **sdo_read_buffer_size** (*Optional*, int): Compiles in `read_sdo_data()` for [lambdas](#sdo-client), with a buffer of
-  this many bytes, from `1` to `65535`. A longer object is aborted. Every `canopen` component gets a buffer of the
-  largest size set on any of them. Not set by default: no buffer and no `read_sdo_data()`.
 - **sdo_block_size** (*Optional*, int): Enables SDO block transfer in the SDO server (large uploads and downloads,
   e.g. firmware), from `1` to `127`: the number of frames per block the node accepts in a block download. The client
   sends a whole block back to back, so it must fit the CAN receive queue of the node. Block transfer uses about 900
@@ -311,8 +308,9 @@ id(my_canopen).read_sdo<uint32_t>(0x01, 0x1018, 1, [](void *context, const canop
 // value write
 id(my_canopen).write_sdo<uint16_t>(0x01, 0x1017, 0, 2000);
 
-// buffer read (strings, domains), needs sdo_read_buffer_size
-id(my_canopen).read_sdo_data(0x01, 0x1008, 0, [](void *context, const canopen::SDOReply &reply) {
+// buffer read (strings, domains); the buffer must stay valid until the callback
+static uint8_t name[64];
+id(my_canopen).read_sdo_data(0x01, 0x1008, 0, name, sizeof(name), [](void *context, const canopen::SDOReply &reply) {
   if (reply.ok())
     ESP_LOGI("main", "name: %.*s", (int) reply.len, (const char *) reply.data);
 }, nullptr);
@@ -320,9 +318,10 @@ id(my_canopen).read_sdo_data(0x01, 0x1008, 0, [](void *context, const canopen::S
 
 - `read_sdo<T>(node_id, index, subindex, callback, context)` and `write_sdo<T>(node_id, index, subindex, value,
   callback, context)` for values of 1, 2 or 4 bytes. `SDOReply::as<T>()` sign-extends for signed types.
-- `read_sdo_data()` and `write_sdo_data(node_id, index, subindex, data, len, callback, context)` for buffers.
-  `read_sdo_data()` exists only with `sdo_read_buffer_size`. `write_sdo_data()` doesn't copy the data: it must stay
-  valid until the callback.
+- `read_sdo_data(node_id, index, subindex, data, capacity, callback, context)` and `write_sdo_data(node_id, index,
+  subindex, data, len, callback, context)` for buffers. The buffer belongs to the caller and must stay valid until the
+  callback, so it can't be a local variable. A read of an object longer than `capacity` is aborted. Requests run one
+  at a time, so queued reads can share a buffer if each callback uses the data before it returns.
 - `cancel_sdo(context)` drops all queued requests with that `context` and aborts its transfer in flight, without
   callbacks.
 
